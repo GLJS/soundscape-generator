@@ -27,7 +27,19 @@ class FAVDBenchProcessor(DatasetProcessor):
     def __init__(self, audio_dir: str, metadata_path: str, output_dir: str):
         super().__init__(audio_dir, metadata_path, output_dir)
         self.audio_archive = self.audio_dir / "audios.tar.gz"
+        self.audios_directory = self.audio_dir / "audios"
         self.extracted_audio = {}
+        
+        # Determine if we're using archive or directory
+        self.use_archive = self.audio_archive.exists()
+        self.use_directory = self.audios_directory.exists() and self.audios_directory.is_dir()
+        
+        if self.use_directory:
+            print(f"Using audio directory: {self.audios_directory}")
+        elif self.use_archive:
+            print(f"Using audio archive: {self.audio_archive}")
+        else:
+            raise ValueError(f"Neither audios.tar.gz nor audios directory found in {self.audio_dir}")
         
     def load_metadata(self) -> pd.DataFrame:
         """Load FAVDBench metadata CSV."""
@@ -42,6 +54,24 @@ class FAVDBenchProcessor(DatasetProcessor):
         
         # The CSV should have columns that include audio filename and text/caption
         return df
+        
+    def load_audio_files(self):
+        """Load audio files from directory."""
+        print(f"Loading audio files from {self.audios_directory}")
+        
+        audio_extensions = ['.wav', '.mp3', '.flac', '.ogg', '.m4a']
+        
+        for audio_file in self.audios_directory.rglob('*'):
+            if audio_file.is_file() and any(audio_file.suffix.lower() == ext for ext in audio_extensions):
+                try:
+                    with open(audio_file, 'rb') as f:
+                        # Store with relative path from audios directory
+                        rel_path = str(audio_file.relative_to(self.audios_directory))
+                        self.extracted_audio[rel_path] = f.read()
+                except Exception as e:
+                    print(f"Error reading {audio_file}: {e}")
+                    
+        print(f"Loaded {len(self.extracted_audio)} audio files")
         
     def extract_audio_files(self):
         """Extract audio files from tar.gz archive into memory."""
@@ -60,9 +90,12 @@ class FAVDBenchProcessor(DatasetProcessor):
         
     def match_audio_to_text(self, metadata_df: pd.DataFrame) -> List[Tuple[bytes, str, Dict]]:
         """Match audio files to their captions."""
-        # First extract audio files if not already done
+        # First extract/load audio files if not already done
         if not self.extracted_audio:
-            self.extract_audio_files()
+            if self.use_directory:
+                self.load_audio_files()
+            else:
+                self.extract_audio_files()
             
         matched = []
         missing_count = 0
@@ -140,8 +173,7 @@ def main():
     processor = FAVDBenchProcessor(
         audio_dir=args.audio_dir,
         metadata_path=args.metadata,
-        output_dir=args.output_dir,
-        task="AAC")
+        output_dir=args.output_dir)
     
     # Process dataset
     processor.process_dataset(samples_per_tar=args.samples_per_tar)

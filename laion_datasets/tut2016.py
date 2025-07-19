@@ -103,12 +103,78 @@ class TUT2016Processor(DatasetProcessor):
             
         return caption
         
-    def match_audio_to_text(self, metadata_df: pd.DataFrame, base_dir: Path) -> List[Tuple[Path, str, Dict]]:
-        """Match audio files to their captions."""
+        
+    def load_metadata(self) -> pd.DataFrame:
+        """Override to load both development and evaluation sets."""
+        dfs = []
+        
+        # Load development set
+        dev_df = self.load_metadata_split('development')
+        if not dev_df.empty:
+            dfs.append(dev_df)
+            
+        # Load evaluation set  
+        eval_df = self.load_metadata_split('evaluation')
+        if not eval_df.empty:
+            dfs.append(eval_df)
+            
+        if dfs:
+            return pd.concat(dfs, ignore_index=True)
+        return pd.DataFrame()
+        
+    def load_metadata_split(self, split: str) -> pd.DataFrame:
+        """Load metadata for a specific split - original load_metadata logic."""
+        if split == 'development':
+            meta_path = self.dev_dir / "meta.txt"
+            error_path = self.dev_dir / "error.txt"
+        else:
+            meta_path = self.eval_dir / "meta.txt"
+            error_path = self.eval_dir / "error.txt"
+            
+        print(f"Loading metadata from {meta_path}")
+        
+        # Load main metadata
+        df = pd.read_csv(meta_path, sep='\t', header=None, names=['file_path', 'scene'])
+        
+        # Load error annotations if they exist
+        errors = {}
+        if error_path.exists():
+            with open(error_path, 'r') as f:
+                for line in f:
+                    parts = line.strip().split('\t')
+                    if len(parts) >= 3:
+                        file_path = parts[0]
+                        error_type = parts[1]
+                        description = parts[2] if len(parts) > 2 else ""
+                        errors[file_path] = {
+                            'error_type': error_type,
+                            'error_description': description
+                        }
+        
+        # Add error info to dataframe
+        df['has_error'] = df['file_path'].isin(errors)
+        df['error_info'] = df['file_path'].map(errors)
+        
+        # Add split info
+        df['split'] = 'train' if split == 'development' else 'test'
+        
+        print(f"Loaded {len(df)} entries for {split} set")
+        if errors:
+            print(f"  Found {len(errors)} files with errors")
+        
+        return df
+        
+    def match_audio_to_text(self, metadata_df: pd.DataFrame) -> List[Tuple[Path, str, Dict]]:
+        """Override to handle both dev and eval directories."""
         matched = []
-        missing_count = 0
         
         for _, row in metadata_df.iterrows():
+            # Determine which directory based on split
+            if row['split'] == 'train':
+                base_dir = self.dev_dir
+            else:
+                base_dir = self.eval_dir
+                
             # Construct full audio path
             audio_path = base_dir / row['file_path']
             
@@ -121,7 +187,8 @@ class TUT2016Processor(DatasetProcessor):
                     'split': row['split'],
                     'original_filename': os.path.basename(row['file_path']),
                     'scene': row['scene'],
-                    'has_error': row['has_error']
+                    'has_error': row['has_error'],
+                    'task': 'ASC'
                 }
                 
                 # Add error info if present
@@ -131,71 +198,10 @@ class TUT2016Processor(DatasetProcessor):
                 
                 matched.append((audio_path, caption, metadata))
             else:
-                missing_count += 1
                 print(f"Missing audio file: {audio_path}")
                 
         print(f"Matched {len(matched)} audio-text pairs")
-        if missing_count > 0:
-            print(f"Missing audio files: {missing_count}")
-        
         return matched
-        
-    def process_dataset(self, samples_per_tar: int = 256):
-        """Process the entire dataset into tar files."""
-        all_matched = []
-        
-        # Process development set
-        print("\nProcessing development set...")
-        dev_metadata = self.load_metadata('development')
-        dev_matched = self.match_audio_to_text(dev_metadata, self.dev_dir)
-        all_matched.extend(dev_matched)
-        
-        # Process evaluation set
-        print("\nProcessing evaluation set...")
-        eval_metadata = self.load_metadata('evaluation')
-        eval_matched = self.match_audio_to_text(eval_metadata, self.eval_dir)
-        all_matched.extend(eval_matched)
-        
-        # Create tar files
-        tar_creator = TarCreator(self.output_dir, prefix="tut2016", 
-                                 samples_per_tar=samples_per_tar)
-        
-        # Process in batches
-        all_summaries = []
-        for i in range(0, len(all_matched), samples_per_tar):
-            batch = all_matched[i:i+samples_per_tar]
-            samples = []
-            
-            for audio_path, text, metadata in batch:
-                try:
-                    # Process audio
-                    audio_bytes, audio_metadata = self.audio_processor.process_audio_file(audio_path)
-                    samples.append({
-                        'audio_bytes': audio_bytes,
-                        'text': text,
-                        'metadata': {**metadata, **audio_metadata, 'task': 'ASC'}
-                    })
-                except Exception as e:
-                    print(f"Failed to process {audio_path}: {e}")
-                    
-            if samples:
-                summary = tar_creator.create_tar_from_samples(samples, i // samples_per_tar)
-                all_summaries.append(summary)
-                
-        # Create size file
-        tar_creator.create_size_file(all_summaries)
-        
-        # Summary
-        total_successful = sum(s['successful'] for s in all_summaries)
-        total_failed = sum(s['failed'] for s in all_summaries)
-        
-        print(f"\nProcessing complete!")
-        print(f"Total samples: {len(all_matched)}")
-        print(f"Successfully processed: {total_successful}")
-        print(f"Failed: {total_failed}")
-        print(f"Created {len(all_summaries)} tar files in {self.output_dir}")
-        
-        return all_summaries
 
 
 def main():

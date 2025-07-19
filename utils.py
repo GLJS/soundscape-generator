@@ -230,10 +230,36 @@ class DatasetProcessor:
         # Match audio to text
         matched_samples = self.match_audio_to_text(metadata_df)
         
+        # Validate splits
+        valid_splits = {'train', 'test', 'valid', 'val'}
+        missing_split_count = 0
+        invalid_split_values = set()
+        
         # Group samples by split
         samples_by_split = {}
         for audio_path, text, metadata in matched_samples:
-            split = metadata.get('split', 'train')  # Default to 'train' if no split specified
+            split = metadata.get('split')
+            
+            # Default to 'train' if split is missing
+            if split is None:
+                missing_split_count += 1
+                split = 'train'
+                metadata['split'] = 'train'
+                if missing_split_count == 1:
+                    print(f"WARNING: No split information found, defaulting all samples to 'train'")
+            
+            # Normalize 'val' to 'valid'
+            if split == 'val':
+                split = 'valid'
+                metadata['split'] = 'valid'
+            
+            # Check if split is valid
+            if split not in valid_splits:
+                invalid_split_values.add(split)
+                print(f"WARNING: Sample {audio_path} has invalid split '{split}', defaulting to 'train'")
+                split = 'train'
+                metadata['split'] = 'train'
+            
             if split not in samples_by_split:
                 samples_by_split[split] = []
             samples_by_split[split].append((audio_path, text, metadata))

@@ -242,7 +242,8 @@ class TUT2017Processor(DatasetProcessor):
                     'original_filename': audio_filename,
                     'scene': row['scene'],
                     'has_error': row['has_error'],
-                    'segment_duration': 10  # TUT2017 uses 10-second segments
+                    'segment_duration': 10,  # TUT2017 uses 10-second segments
+                    'task': 'ASC'
                 }
                 
                 # Add error info if present
@@ -262,6 +263,7 @@ class TUT2017Processor(DatasetProcessor):
         
         return matched
         
+    # NOTE: This file needs a custom process_dataset due to complex ZIP handling
     def process_dataset(self, samples_per_tar: int = 256):
         """Process the entire dataset into tar files."""
         all_matched = []

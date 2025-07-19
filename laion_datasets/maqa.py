@@ -88,12 +88,16 @@ class MAQAProcessor(DatasetProcessor):
             if filename in audio_files:
                 audio_path = audio_files[filename]
                 caption = row['caption']
+                # Determine task type based on source file
+                task = 'MC' if 'multiple_choice' in str(row.get('source_file', '')).lower() else 'AQA'
                 metadata = {
                     'split': row['split'],
                     'original_filename': filename,
                     'language': row.get('language', ''),
                     'question': row.get('QuestionText', ''),
-                    'answer': row.get('answer', '')
+                    'answer': row.get('answer', ''),
+                    'task': task,
+                    'source_file': row.get('source_file', '')
                 }
                 matched.append((audio_path, caption, metadata))
             else:
@@ -104,55 +108,6 @@ class MAQAProcessor(DatasetProcessor):
         
         return matched
         
-    def process_dataset(self, samples_per_tar: int = 256):
-        """Process the entire dataset into tar files."""
-        # Load metadata
-        metadata_df = self.load_metadata()
-        
-        # Match audio to text
-        matched_samples = self.match_audio_to_text(metadata_df)
-        
-        # Create tar files
-        tar_creator = TarCreator(self.output_dir, prefix="maqa", 
-                                 samples_per_tar=samples_per_tar)
-        
-        # Process in batches
-        all_summaries = []
-        for i in range(0, len(matched_samples), samples_per_tar):
-            batch = matched_samples[i:i+samples_per_tar]
-            samples = []
-            
-            for audio_path, text, metadata in batch:
-                try:
-                    audio_bytes, audio_metadata = self.audio_processor.process_audio_file(audio_path)
-                    # Determine task type based on metadata
-                    task = 'MC' if 'multiple_choice' in str(metadata.get('source_file', '')).lower() else 'AQA'
-                    samples.append({
-                        'audio_bytes': audio_bytes,
-                        'text': text,
-                        'metadata': {**metadata, **audio_metadata, 'task': task}
-                    })
-                except Exception as e:
-                    print(f"Failed to process {audio_path}: {e}")
-                    
-            if samples:
-                summary = tar_creator.create_tar_from_samples(samples, i // samples_per_tar)
-                all_summaries.append(summary)
-                
-        # Create size file
-        tar_creator.create_size_file(all_summaries)
-        
-        # Summary
-        total_successful = sum(s['successful'] for s in all_summaries)
-        total_failed = sum(s['failed'] for s in all_summaries)
-        
-        print(f"\nProcessing complete!")
-        print(f"Total samples: {len(matched_samples)}")
-        print(f"Successfully processed: {total_successful}")
-        print(f"Failed: {total_failed}")
-        print(f"Created {len(all_summaries)} tar files in {self.output_dir}")
-        
-        return all_summaries
 
 
 def main():

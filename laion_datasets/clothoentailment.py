@@ -16,6 +16,7 @@ from utils import DatasetProcessor, TarCreator, AudioProcessor
 from typing import List, Tuple, Dict
 import argparse
 from dotenv import load_dotenv
+import ast
 
 load_dotenv()
 
@@ -27,7 +28,7 @@ class ClothoEntailmentProcessor(DatasetProcessor):
         super().__init__(audio_dir, metadata_path, output_dir)
         
     def load_metadata(self) -> pd.DataFrame:
-        """Load ClothoEntailment metadata CSV files."""
+        """Load ClothoEntailment metadata CSV files and create question-answer pairs."""
         print(f"Loading metadata from {self.metadata_path}")
         
         dfs = []
@@ -48,32 +49,70 @@ class ClothoEntailmentProcessor(DatasetProcessor):
         if dfs:
             combined_df = pd.concat(dfs, ignore_index=True)
             
-            # Melt to create separate rows for each caption type
-            melted_df = pd.melt(
-                combined_df,
-                id_vars=['Audio file', 'split'],
-                value_vars=['Entailment', 'Neutral', 'Contradiction'],
-                var_name='caption_type',
-                value_name='caption_text'
-            )
+            # Question templates for each entailment type
+            question_templates = {
+                'entailment': "What follows this caption? Caption: ",
+                'neutral': "What could be true about this caption? Caption: ",
+                'contradiction': "What contradicts this caption? Caption: "
+            }
             
-            # Combine caption type and text
-            melted_df['caption'] = melted_df['caption_type'] + ': ' + melted_df['caption_text']
-            melted_df.rename(columns={'Audio file': 'file_name'}, inplace=True)
+            # Create rows for each caption and entailment type combination
+            all_rows = []
             
-            # Add split prefix to filename
-            melted_df['file_name'] = melted_df.apply(
-                lambda x: f"{x['split']}/{x['file_name']}", axis=1
-            )
+            for _, row in combined_df.iterrows():
+                audio_file = row['Audio file']
+                split = row['split']
+                
+                # Parse the Caption column (it's a string representation of a list)
+                try:
+                    captions = ast.literal_eval(row['Caption'])
+                except:
+                    # If parsing fails, skip this row
+                    print(f"Failed to parse captions for {audio_file}")
+                    continue
+                
+                # For each caption, create 3 question-answer pairs
+                for caption in captions:
+                    # Entailment question
+                    all_rows.append({
+                        'file_name': f"{split}/{audio_file}",
+                        'question': question_templates['entailment'] + caption,
+                        'answer': row['Entailment'],
+                        'caption': caption,
+                        'question_type': 'entailment',
+                        'split': split
+                    })
+                    
+                    # Neutral question
+                    all_rows.append({
+                        'file_name': f"{split}/{audio_file}",
+                        'question': question_templates['neutral'] + caption,
+                        'answer': row['Neutral'],
+                        'caption': caption,
+                        'question_type': 'neutral',
+                        'split': split
+                    })
+                    
+                    # Contradiction question
+                    all_rows.append({
+                        'file_name': f"{split}/{audio_file}",
+                        'question': question_templates['contradiction'] + caption,
+                        'answer': row['Contradiction'],
+                        'caption': caption,
+                        'question_type': 'contradiction',
+                        'split': split
+                    })
             
-            print(f"Total entries after melting: {len(melted_df)}")
-            return melted_df
+            result_df = pd.DataFrame(all_rows)
+            print(f"Total question-answer pairs created: {len(result_df)}")
+            
+            return result_df
         else:
             return pd.DataFrame()
         
         
     def match_audio_to_text(self, metadata_df: pd.DataFrame) -> List[Tuple[Path, str, Dict]]:
-        """Match audio files to their captions."""
+        """Match audio files to their question-answer pairs."""
         matched = []
         missing_count = 0
         
@@ -103,70 +142,27 @@ class ClothoEntailmentProcessor(DatasetProcessor):
                                 break
             
             if audio_path:
-                caption = row['caption']
+                # Combine question and answer for the text field
+                text = f"Question: {row['question']}\nAnswer: {row['answer']}"
                 metadata = {
                     'split': row['split'],
                     'original_filename': filename,
-                    'caption_type': row.get('caption_type', '')
+                    'question_type': row['question_type'],
+                    'caption': row['caption'],
+                    'question': row['question'],
+                    'answer': row['answer'],
+                    'task': 'AQA'
                 }
-                matched.append((audio_path, caption, metadata))
+                matched.append((audio_path, text, metadata))
             else:
                 missing_count += 1
                 print(f"Missing audio file: {filename}")
                 
-        print(f"Matched {len(matched)} audio-text pairs")
+        print(f"Matched {len(matched)} audio-question-answer triplets")
         print(f"Missing audio files: {missing_count}")
         
         return matched
         
-    def process_dataset(self, samples_per_tar: int = 256):
-        """Process the entire dataset into tar files."""
-        # Load metadata
-        metadata_df = self.load_metadata()
-        
-        # Match audio to text
-        matched_samples = self.match_audio_to_text(metadata_df)
-        
-        # Create tar files
-        tar_creator = TarCreator(self.output_dir, prefix="clothoentailment", 
-                                 samples_per_tar=samples_per_tar)
-        
-        # Process in batches
-        all_summaries = []
-        for i in range(0, len(matched_samples), samples_per_tar):
-            batch = matched_samples[i:i+samples_per_tar]
-            samples = []
-            
-            for audio_path, text, metadata in batch:
-                try:
-                    # Process audio file from path
-                    audio_bytes, audio_metadata = self.audio_processor.process_audio_file(audio_path)
-                    samples.append({
-                        'audio_bytes': audio_bytes,
-                        'text': text,
-                        'metadata': {**metadata, **audio_metadata, 'task': 'AQA'}
-                    })
-                except Exception as e:
-                    print(f"Failed to process audio {audio_path}: {e}")
-                    
-            if samples:
-                summary = tar_creator.create_tar_from_samples(samples, i // samples_per_tar)
-                all_summaries.append(summary)
-                
-        # Create size file
-        tar_creator.create_size_file(all_summaries)
-        
-        # Summary
-        total_successful = sum(s['successful'] for s in all_summaries)
-        total_failed = sum(s['failed'] for s in all_summaries)
-        
-        print(f"\nProcessing complete!")
-        print(f"Total samples: {len(matched_samples)}")
-        print(f"Successfully processed: {total_successful}")
-        print(f"Failed: {total_failed}")
-        print(f"Created {len(all_summaries)} tar files in {self.output_dir}")
-        
-        return all_summaries
 
 
 def main():

@@ -74,19 +74,13 @@ class ClothoDetailProcessor(DatasetProcessor):
                 if eval_path.exists():
                     audio_path = eval_path
                     split = 'valid'
-                    
-            # Try direct path if not found in subdirectories
-            if not audio_path:
-                direct_path = self.audio_dir / audio_id
-                if direct_path.exists():
-                    audio_path = direct_path
-                    split = 'train'  # default split
             
             if audio_path:
                 caption = row.get('caption', '')
                 metadata = {
                     'split': split,
-                    'original_filename': audio_id
+                    'original_filename': audio_id,
+                    'task': 'AAC'
                 }
                 matched.append((audio_path, caption, metadata))
             else:
@@ -98,61 +92,12 @@ class ClothoDetailProcessor(DatasetProcessor):
         
         return matched
         
-    def process_dataset(self, samples_per_tar: int = 256):
-        """Process the entire dataset into tar files."""
-        # Load metadata
-        metadata_df = self.load_metadata()
-        
-        # Match audio to text (gets metadata only)
-        matched_samples = self.match_audio_to_text(metadata_df)
-        
-        # Create tar files
-        from utils import TarCreator
-        tar_creator = TarCreator(self.output_dir, prefix="clothodetail", 
-                                 samples_per_tar=samples_per_tar)
-        
-        # Process in batches
-        all_summaries = []
-        for i in range(0, len(matched_samples), samples_per_tar):
-            batch = matched_samples[i:i+samples_per_tar]
-            samples = []
-            
-            for audio_path, text, metadata in batch:
-                try:
-                    # Process audio file from path
-                    processed_audio, audio_metadata = self.audio_processor.process_audio_file(audio_path)
-                    samples.append({
-                        'audio_bytes': processed_audio,
-                        'text': text,
-                        'metadata': {**metadata, **audio_metadata, 'task': 'AAC'}
-                    })
-                except Exception as e:
-                    print(f"Failed to process {audio_path}: {e}")
-                    
-            if samples:
-                summary = tar_creator.create_tar_from_samples(samples, i // samples_per_tar)
-                all_summaries.append(summary)
-                
-        # Create size file
-        tar_creator.create_size_file(all_summaries)
-        
-        # Summary
-        total_successful = sum(s['successful'] for s in all_summaries)
-        total_failed = sum(s['failed'] for s in all_summaries)
-        
-        print(f"\nProcessing complete!")
-        print(f"Total samples: {len(matched_samples)}")
-        print(f"Successfully processed: {total_successful}")
-        print(f"Failed: {total_failed}")
-        print(f"Created {len(all_summaries)} tar files in {self.output_dir}")
-        
-        return all_summaries
 
 
 def main():
     parser = argparse.ArgumentParser(description="Convert ClothoDetail dataset to tar format")
     parser.add_argument("--audio-dir", type=str, 
-                       default="/scratch-shared/gwijngaard/laion/ClothoDetail/audio",
+                       default="/scratch-shared/gwijngaard/laion/ClothoDetail/",
                        help="Path to directory containing extracted audio files (with development/ and evaluation/ subdirs)")
     parser.add_argument("--metadata", type=str,
                        default="/gpfs/work4/0/einf6190/data-preparation/data/ClothoDetail",
@@ -169,8 +114,7 @@ def main():
     processor = ClothoDetailProcessor(
         audio_dir=args.audio_dir,
         metadata_path=args.metadata,
-        output_dir=args.output_dir,
-        task="AAC")
+        output_dir=args.output_dir)
     
     # Process dataset
     processor.process_dataset(samples_per_tar=args.samples_per_tar)

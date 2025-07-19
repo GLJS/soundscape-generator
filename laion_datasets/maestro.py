@@ -136,7 +136,9 @@ class MAESTROProcessor(DatasetProcessor):
                 audio_bytes = output_buffer.read()
                 
                 # Create metadata
+                # Since this is development_audio, set split to 'train'
                 metadata = {
+                    'split': 'train',
                     'scene': scene,
                     'original_filename': audio_path.name,
                     'segment_index': i,
@@ -145,7 +147,8 @@ class MAESTROProcessor(DatasetProcessor):
                     'duration': end_time - start_time,
                     'sample_rate': 48000,
                     'channels': 1,
-                    'format': 'flac'
+                    'format': 'flac',
+                    'task': 'AAC'
                 }
                 
                 # Add event details to metadata
@@ -194,46 +197,6 @@ class MAESTROProcessor(DatasetProcessor):
         print(f"\nTotal segments created: {len(all_segments)}")
         return all_segments
         
-    def process_dataset(self, samples_per_tar: int = 256):
-        """Process the entire dataset into tar files."""
-        # Get all segments
-        all_segments = self.match_audio_to_text()
-        
-        # Create tar files
-        tar_creator = TarCreator(self.output_dir, prefix="maestro", 
-                                 samples_per_tar=samples_per_tar)
-        
-        # Process in batches
-        all_summaries = []
-        for i in range(0, len(all_segments), samples_per_tar):
-            batch = all_segments[i:i+samples_per_tar]
-            samples = []
-            
-            for audio_bytes, text, metadata in batch:
-                samples.append({
-                    'audio_bytes': audio_bytes,
-                    'text': text,
-                    'metadata': {**metadata, 'task': 'SED'}
-                })
-                    
-            if samples:
-                summary = tar_creator.create_tar_from_samples(samples, i // samples_per_tar)
-                all_summaries.append(summary)
-                
-        # Create size file
-        tar_creator.create_size_file(all_summaries)
-        
-        # Summary
-        total_successful = sum(s['successful'] for s in all_summaries)
-        total_failed = sum(s['failed'] for s in all_summaries)
-        
-        print(f"\nProcessing complete!")
-        print(f"Total segments: {len(all_segments)}")
-        print(f"Successfully processed: {total_successful}")
-        print(f"Failed: {total_failed}")
-        print(f"Created {len(all_summaries)} tar files in {self.output_dir}")
-        
-        return all_summaries
 
 
 def main():

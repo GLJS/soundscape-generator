@@ -108,7 +108,8 @@ class VGGSoundProcessor(DatasetProcessor):
                         'youtube_id': row['youtube_id'],
                         'start_sec': row['start_sec'],
                         'archive_idx': archive_idx,
-                        'member_name': member_name
+                        'member_name': member_name,
+                        'task': 'AAC'
                     }
                     matched.append((None, caption, metadata))  # None for audio, will extract later
                     audio_found = True
@@ -124,6 +125,7 @@ class VGGSoundProcessor(DatasetProcessor):
         
         return matched
         
+    # NOTE: This file needs a custom process_dataset due to audio extraction from archives
     def process_dataset(self, samples_per_tar: int = 256):
         """Process the entire dataset into tar files."""
         # Load metadata

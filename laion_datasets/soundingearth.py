@@ -70,6 +70,17 @@ class SoundingEarthProcessor(DatasetProcessor):
         matched = []
         missing_count = 0
         
+        # Check if metadata has split column
+        has_split_column = 'split' in metadata_df.columns
+        
+        # If no split column, create splits - put train everywhere
+        if not has_split_column:
+            print("No split column found in metadata, assigning all samples to train split")
+            
+            # Add split column to dataframe
+            metadata_df = metadata_df.copy()
+            metadata_df['split'] = 'train'  # Put train everywhere
+        
         for _, row in metadata_df.iterrows():
             filename = row['file_name']
             
@@ -79,8 +90,9 @@ class SoundingEarthProcessor(DatasetProcessor):
                 if filename in audio_path or os.path.basename(audio_path) == filename:
                     caption = row['caption']
                     metadata = {
-                        'split': row.get('split', 'train'),
-                        'original_filename': filename
+                        'split': row['split'],  # Now guaranteed to exist
+                        'original_filename': filename,
+                        'task': 'AAC'
                     }
                     matched.append((audio_bytes, caption, metadata))
                     audio_found = True
@@ -94,54 +106,6 @@ class SoundingEarthProcessor(DatasetProcessor):
         
         return matched
         
-    def process_dataset(self, samples_per_tar: int = 256):
-        """Process the entire dataset into tar files."""
-        # Load metadata
-        metadata_df = self.load_metadata()
-        
-        # Match audio to text
-        matched_samples = self.match_audio_to_text(metadata_df)
-        
-        # Create tar files
-        tar_creator = TarCreator(self.output_dir, prefix="soundingearth", 
-                                 samples_per_tar=samples_per_tar)
-        
-        # Process in batches
-        all_summaries = []
-        for i in range(0, len(matched_samples), samples_per_tar):
-            batch = matched_samples[i:i+samples_per_tar]
-            samples = []
-            
-            for audio_bytes, text, metadata in batch:
-                try:
-                    # Process audio (audio_bytes is already bytes)
-                    processed_audio, audio_metadata = self.audio_processor.process_audio_file(audio_bytes)
-                    samples.append({
-                        'audio_bytes': processed_audio,
-                        'text': text,
-                        'metadata': {**metadata, **audio_metadata, 'task': 'AAC'}
-                    })
-                except Exception as e:
-                    print(f"Failed to process audio: {e}")
-                    
-            if samples:
-                summary = tar_creator.create_tar_from_samples(samples, i // samples_per_tar)
-                all_summaries.append(summary)
-                
-        # Create size file
-        tar_creator.create_size_file(all_summaries)
-        
-        # Summary
-        total_successful = sum(s['successful'] for s in all_summaries)
-        total_failed = sum(s['failed'] for s in all_summaries)
-        
-        print(f"\nProcessing complete!")
-        print(f"Total samples: {len(matched_samples)}")
-        print(f"Successfully processed: {total_successful}")
-        print(f"Failed: {total_failed}")
-        print(f"Created {len(all_summaries)} tar files in {self.output_dir}")
-        
-        return all_summaries
         
 
 

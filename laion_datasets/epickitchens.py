@@ -97,7 +97,8 @@ class EpicKitchensProcessor(DatasetProcessor):
                             metadata = {
                                 'split': 'train',
                                 'original_filename': h5_path.name,
-                                'format': 'hdf5'
+                                'format': 'hdf5',
+                                'task': 'AAC'
                             }
                             
                             matched.append((audio_bytes, caption, metadata))
