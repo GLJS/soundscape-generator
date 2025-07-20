@@ -25,7 +25,14 @@
 
 import os
 
-import deepspeed.comm as dist
+try:
+    import deepspeed.comm as dist
+except:
+    # Fallback for inference without deepspeed
+    class MockDist:
+        def is_initialized(self):
+            return False
+    dist = MockDist()
 import torch
 
 

@@ -129,15 +129,13 @@ class VGGSoundProcessor(DatasetProcessor):
             
             for audio_file_path, text, metadata in batch:
                 try:
-                    # Extract audio on demand
-                    if audio_file_path.exists():
-                        # Process audio
-                        processed_audio, audio_metadata = self.audio_processor.process_audio_file(audio_file_path)
-                        samples.append({
-                            'audio_bytes': processed_audio,
-                            'text': text,
-                            'metadata': {**metadata, **audio_metadata}
-                        })
+                    # Process audio
+                    processed_audio, audio_metadata = self.audio_processor.process_audio_file(audio_file_path)
+                    samples.append({
+                        'audio_bytes': processed_audio,
+                        'text': text,
+                        'metadata': {**metadata, **audio_metadata}
+                    })
                 except Exception as e:
                     print(f"Failed to process {metadata.get('original_filename', 'unknown')}: {e}")
                     

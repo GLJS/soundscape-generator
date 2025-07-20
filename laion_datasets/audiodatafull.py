@@ -17,6 +17,7 @@ from typing import List, Tuple, Dict
 import argparse
 from dotenv import load_dotenv
 import ast
+from utils_llm import process_dataset_with_llm
 
 load_dotenv()
 
@@ -24,9 +25,13 @@ load_dotenv()
 class AudioDataFullProcessor(DatasetProcessor):
     """Processor for AudioDataFull dataset."""
     
-    def __init__(self, audio_dir: str, metadata_path: str, output_dir: str):
+    def __init__(self, audio_dir: str, metadata_path: str, output_dir: str, 
+                 use_recaption: bool = True, batch_size: int = 8, num_workers: int = 8):
         super().__init__(audio_dir, metadata_path, output_dir)
         # Process extracted directories instead of tar archive
+        self.use_recaption = use_recaption
+        self.batch_size = batch_size
+        self.num_workers = num_workers
         
     def load_metadata(self) -> pd.DataFrame:
         """Load metadata from df_lemm_srl_path.csv."""
@@ -67,6 +72,10 @@ class AudioDataFullProcessor(DatasetProcessor):
             # Process files based on metadata
             print(f"  Processing {len(metadata_df)} files from metadata")
             
+            # First collect all valid audio paths and metadata
+            audio_paths = []
+            metadata_list = []
+            
             for idx, row in metadata_df.iterrows():
                 try:
                     audio_path = Path(row['local_path'])
@@ -75,44 +84,62 @@ class AudioDataFullProcessor(DatasetProcessor):
                         print(f"    File not found: {audio_path}")
                         continue
                     
-                    # Extract caption from description
-                    caption = row.get('description', '')
-                    if isinstance(caption, str) and caption.startswith('['):
-                        # Parse the description field
-                        try:
-                            desc_list = ast.literal_eval(caption)
-                            if desc_list and isinstance(desc_list[0], str):
-                                # Extract meaningful part from comment
-                                caption = desc_list[0].replace('comment=', '').split('\\;')[0]
-                        except:
-                            pass
-                    
-                    # If no good caption, use filename
-                    if not caption or caption == '[]':
-                        caption = row['filename'].replace('.wav', '').replace('.mp3', '').replace('.flac', '')
-                    
                     metadata = {
                         'split': 'train',
                         'original_filename': row['filename'],
                         'dataset_root': row.get('dataset_root', ''),
                         'full_path': row.get('path', ''),
-                        'local_path': str(audio_path)
+                        'local_path': str(audio_path),
+                        'original_description': row.get('description', '')
                     }
                     
-                    matched.append((audio_path, caption, metadata))
+                    audio_paths.append(audio_path)
+                    metadata_list.append(metadata)
                     processed_count += 1
                     
                     # Limit for testing/memory management
                     if processed_count >= 1000:
-                        print(f"  Processed {processed_count} files (limited for testing)")
+                        print(f"  Collected {processed_count} files (limited for testing)")
                         break
-                        
-                    if processed_count % 100 == 0:
-                        print(f"  Processed {processed_count} files...")
                         
                 except Exception as e:
                     print(f"    Error processing row {idx}: {e}")
                     continue
+            
+            # Process with LLM recaptioning if enabled
+            if self.use_recaption and audio_paths:
+                print(f"\n  Starting LLM recaptioning for {len(audio_paths)} files...")
+                
+                # Use the CSV path for label context
+                labels_csv = str(self.audio_dir / "df_lemm_srl_path.csv")
+                
+                # Process all audio files with LLM
+                llm_results = process_dataset_with_llm(
+                    audio_paths=audio_paths,
+                    metadata=metadata_list,
+                    batch_size=self.batch_size,
+                    num_workers=self.num_workers,
+                    labels_csv=labels_csv if Path(labels_csv).exists() else None
+                )
+                
+                matched.extend(llm_results)
+            else:
+                # Fallback to original caption extraction
+                print("  Using original captions from metadata...")
+                for audio_path, metadata in zip(audio_paths, metadata_list):
+                    caption = metadata.get('original_description', '')
+                    if isinstance(caption, str) and caption.startswith('['):
+                        try:
+                            desc_list = ast.literal_eval(caption)
+                            if desc_list and isinstance(desc_list[0], str):
+                                caption = desc_list[0].replace('comment=', '').split('\\;')[0]
+                        except:
+                            pass
+                    
+                    if not caption or caption == '[]':
+                        caption = metadata['original_filename'].replace('.wav', '').replace('.mp3', '').replace('.flac', '')
+                    
+                    matched.append((audio_path, caption, metadata))
                     
         else:
             # Fallback: process directories without metadata
@@ -129,12 +156,15 @@ class AudioDataFullProcessor(DatasetProcessor):
                 'Ultimate-2448'
             ]
             
+            audio_paths = []
+            metadata_list = []
+            
             for subdir in subdirs:
                 subdir_path = self.audio_dir / subdir
                 if not subdir_path.exists():
                     continue
                     
-                print(f"  Processing {subdir}...")
+                print(f"  Collecting files from {subdir}...")
                 
                 # Find all audio files in subdirectory
                 audio_files = []
@@ -145,7 +175,6 @@ class AudioDataFullProcessor(DatasetProcessor):
                     try:
                         filename = audio_path.name
                         relative_path = str(audio_path.relative_to(self.audio_dir))
-                        caption = filename.replace('.wav', '').replace('.mp3', '').replace('.flac', '')
                         
                         metadata = {
                             'split': 'train',
@@ -154,15 +183,13 @@ class AudioDataFullProcessor(DatasetProcessor):
                             'full_path': relative_path
                         }
                         
-                        matched.append((audio_path, caption, metadata))
+                        audio_paths.append(audio_path)
+                        metadata_list.append(metadata)
                         processed_count += 1
                         
                         if processed_count >= 1000:
-                            print(f"  Processed {processed_count} files (limited for testing)")
+                            print(f"  Collected {processed_count} files (limited for testing)")
                             break
-                            
-                        if processed_count % 100 == 0:
-                            print(f"    Processed {processed_count} files...")
                             
                     except Exception as e:
                         print(f"    Error processing {audio_path}: {e}")
@@ -170,6 +197,26 @@ class AudioDataFullProcessor(DatasetProcessor):
                 
                 if processed_count >= 1000:
                     break
+            
+            # Process with LLM recaptioning if enabled
+            if self.use_recaption and audio_paths:
+                print(f"\n  Starting LLM recaptioning for {len(audio_paths)} files...")
+                
+                llm_results = process_dataset_with_llm(
+                    audio_paths=audio_paths,
+                    metadata=metadata_list,
+                    batch_size=self.batch_size,
+                    num_workers=self.num_workers,
+                    labels_csv=None  # No labels CSV for directory processing
+                )
+                
+                matched.extend(llm_results)
+            else:
+                # Fallback to filename-based captions
+                print("  Using filename-based captions...")
+                for audio_path, metadata in zip(audio_paths, metadata_list):
+                    caption = metadata['original_filename'].replace('.wav', '').replace('.mp3', '').replace('.flac', '')
+                    matched.append((audio_path, caption, metadata))
                             
         print(f"Total processed: {len(matched)} audio-text pairs")
         return matched
@@ -188,6 +235,12 @@ def main():
                        help="Output directory for tar files")
     parser.add_argument("--samples-per-tar", type=int, default=2048,
                        help="Number of samples per tar file")
+    parser.add_argument("--batch-size", type=int, default=8,
+                       help="Batch size for LLM processing")
+    parser.add_argument("--num-workers", type=int, default=8,
+                       help="Number of workers for data loading")
+    parser.add_argument("--no-recaption", action="store_true",
+                       help="Disable LLM recaptioning (use original captions)")
     
     args = parser.parse_args()
     
@@ -195,7 +248,10 @@ def main():
     processor = AudioDataFullProcessor(
         audio_dir=args.audio_dir,
         metadata_path=args.metadata,
-        output_dir=args.output_dir)
+        output_dir=args.output_dir,
+        use_recaption=not args.no_recaption,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers)
     
     # Process dataset
     processor.process_dataset(samples_per_tar=args.samples_per_tar)

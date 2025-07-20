@@ -254,12 +254,12 @@ def extract_media(
     media_meta = defaultdict(list)
     for message in messages:
         text = ""
-        print(message)
+        # print(message)
         for part in make_list(message["value"]):
             if isinstance(part, str):
                 for token in MEDIA_TOKENS.values():
                     if token in part:
-                        logger.warning(f"Media token '{token}' found in text: '{part}'. Removed.")
+                        # logger.warning(f"Media token '{token}' found in text: '{part}'. Removed.")
                         part = part.replace(token, "").strip()
                 text += part
             if isinstance(part, (Image, PIL.Image.Image)):
