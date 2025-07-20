@@ -212,7 +212,8 @@ class LLMRecaptioner:
             
         return None
     
-    def _http_generate(self, audio_path: str, prompt: str, max_retries: int = 3) -> str:
+    def _http_generate(self, audio_path: str, prompt: str, max_retries: int = 3, 
+                       prefetch_paths: Optional[List[str]] = None) -> str:
         """
         Generate caption using HTTP server with retry logic.
         
@@ -220,23 +221,37 @@ class LLMRecaptioner:
             audio_path: Path to audio file
             prompt: Generation prompt
             max_retries: Number of retries on failure
+            prefetch_paths: Optional list of paths to prefetch
             
         Returns:
             Generated caption
         """
         for attempt in range(max_retries):
             try:
+                # Build headers with prefetch hints
+                headers = {}
+                if prefetch_paths:
+                    headers["X-Prefetch-Paths"] = ",".join([str(p) for p in prefetch_paths[:3]])
+                
                 response = self.client.post(
                     f"{self.server_url}/generate",
                     json={
                         "audio_path": str(audio_path),
                         "prompt": prompt,
                         "max_new_tokens": getattr(self.generation_config, 'max_new_tokens', 1024) if self.generation_config else 1024
-                    }
+                    },
+                    headers=headers
                 )
                 
                 if response.status_code == 200:
                     result = response.json()
+                    
+                    # Log performance stats if available
+                    if "loading_time_ms" in result and "inference_time_ms" in result:
+                        logger.debug(f"Performance: load={result['loading_time_ms']:.1f}ms, "
+                                   f"inference={result['inference_time_ms']:.1f}ms, "
+                                   f"prefetched={result.get('prefetched', False)}")
+                    
                     return result["caption"]
                 elif response.status_code == 504:  # Timeout
                     if attempt < max_retries - 1:
@@ -283,8 +298,13 @@ class LLMRecaptioner:
                 prompt = self.generate_prompt(metadata)
                 
                 if self.use_http:
-                    # Use HTTP server
-                    response = self._http_generate(audio_path, prompt)
+                    # Use HTTP server with prefetching hints
+                    # Get next few paths for prefetching
+                    prefetch_paths = []
+                    for j in range(i + 1, min(i + 4, len(batch['audio_paths']))):
+                        prefetch_paths.append(batch['audio_paths'][j])
+                    
+                    response = self._http_generate(audio_path, prompt, prefetch_paths=prefetch_paths)
                 else:
                     # Use local model with generate_content
                     sound = llava.Sound(str(audio_path))

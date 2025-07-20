@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
 """
-Archive Extraction Script
+RAR File Extraction Script for Nested Archives
 
-This script extracts all ZIP and RAR files from a source directory into 
-organized subdirectories while preserving the internal file structure.
+This script finds and extracts all RAR files within the extracted directory,
+preserving their path structure and internal file organization.
 
 Usage: python extract_archives.py
 """
 
 import os
-import zipfile
-import subprocess
+import rarfile
 import logging
 from pathlib import Path
-from typing import List, Tuple
+from typing import List
 
 # Configure logging
 logging.basicConfig(
@@ -26,68 +25,64 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Directory paths
-SOURCE_DIR = "/gpfs/scratch1/shared/gwijngaard/laion/downloaded_sfx/done"
+# Directory path
 EXTRACT_DIR = "/gpfs/scratch1/shared/gwijngaard/laion/downloaded_sfx/extracted"
 
-def ensure_directory_exists(path: str) -> None:
-    """Create directory if it doesn't exist."""
-    Path(path).mkdir(parents=True, exist_ok=True)
-    logger.info(f"Ensured directory exists: {path}")
-
-def find_archive_files(source_dir: str) -> List[Tuple[str, str]]:
+def find_rar_files(base_dir: str) -> List[str]:
     """
-    Find all ZIP and RAR files in the source directory.
-    
-    Returns:
-        List of tuples (file_path, file_type)
-    """
-    archive_files = []
-    
-    if not os.path.exists(source_dir):
-        logger.error(f"Source directory does not exist: {source_dir}")
-        return archive_files
-    
-    for root, dirs, files in os.walk(source_dir):
-        for file in files:
-            file_path = os.path.join(root, file)
-            file_lower = file.lower()
-            
-            if file_lower.endswith('.zip'):
-                archive_files.append((file_path, 'zip'))
-            elif file_lower.endswith('.rar'):
-                archive_files.append((file_path, 'rar'))
-    
-    logger.info(f"Found {len(archive_files)} archive files")
-    return archive_files
-
-def extract_zip_file(zip_path: str, extract_to: str) -> bool:
-    """
-    Extract a ZIP file to the specified directory.
+    Find all RAR files in the directory tree using os.walk.
     
     Args:
-        zip_path: Path to the ZIP file
-        extract_to: Directory to extract to
+        base_dir: Base directory to search in
         
     Returns:
-        True if successful, False otherwise
+        List of absolute paths to RAR files
     """
-    try:
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            # Extract all files while preserving directory structure
-            zip_ref.extractall(extract_to)
-        logger.info(f"Successfully extracted ZIP: {zip_path}")
-        return True
-    except zipfile.BadZipFile:
-        logger.error(f"Bad ZIP file: {zip_path}")
-        return False
-    except Exception as e:
-        logger.error(f"Error extracting ZIP {zip_path}: {str(e)}")
-        return False
+    rar_files = []
+    
+    if not os.path.exists(base_dir):
+        logger.error(f"Directory does not exist: {base_dir}")
+        return rar_files
+    
+    logger.info(f"Scanning directory: {base_dir}")
+    
+    for root, dirs, files in os.walk(base_dir):
+        for file in files:
+            if file.lower().endswith('.rar'):
+                file_path = os.path.join(root, file)
+                rar_files.append(file_path)
+                logger.debug(f"Found RAR: {file_path}")
+    
+    logger.info(f"Found {len(rar_files)} RAR files")
+    return rar_files
+
+def get_extraction_path(rar_path: str) -> str:
+    """
+    Get the extraction path for a RAR file.
+    The RAR will be extracted to a subdirectory with the same name (without .rar)
+    in the same location as the RAR file.
+    
+    Args:
+        rar_path: Path to the RAR file
+        
+    Returns:
+        Path where the RAR should be extracted
+    """
+    # Get directory and filename
+    dir_path = os.path.dirname(rar_path)
+    filename = os.path.basename(rar_path)
+    
+    # Remove .rar extension
+    name_without_ext = os.path.splitext(filename)[0]
+    
+    # Create extraction path
+    extraction_path = os.path.join(dir_path, name_without_ext)
+    
+    return extraction_path
 
 def extract_rar_file(rar_path: str, extract_to: str) -> bool:
     """
-    Extract a RAR file to the specified directory using unrar command.
+    Extract a RAR file to the specified directory.
     
     Args:
         rar_path: Path to the RAR file
@@ -97,124 +92,86 @@ def extract_rar_file(rar_path: str, extract_to: str) -> bool:
         True if successful, False otherwise
     """
     try:
-        # Try using unrar command
-        cmd = ['unrar', 'x', '-y', rar_path, extract_to + '/']
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        # Create extraction directory
+        Path(extract_to).mkdir(parents=True, exist_ok=True)
         
-        if result.returncode == 0:
-            logger.info(f"Successfully extracted RAR: {rar_path}")
-            return True
-        else:
-            logger.error(f"unrar failed for {rar_path}: {result.stderr}")
+        with rarfile.RarFile(rar_path, 'r') as rar_ref:
+            # Extract all files while preserving directory structure
+            rar_ref.extractall(extract_to)
             
-            # Try alternative: 7z command
-            cmd_7z = ['7z', 'x', '-y', f'-o{extract_to}', rar_path]
-            result_7z = subprocess.run(cmd_7z, capture_output=True, text=True, timeout=300)
-            
-            if result_7z.returncode == 0:
-                logger.info(f"Successfully extracted RAR with 7z: {rar_path}")
-                return True
-            else:
-                logger.error(f"Both unrar and 7z failed for {rar_path}")
-                return False
-                
-    except subprocess.TimeoutExpired:
-        logger.error(f"Timeout while extracting RAR: {rar_path}")
+        logger.info(f"Successfully extracted: {rar_path}")
+        logger.info(f"  → Extracted to: {extract_to}")
+        return True
+        
+    except rarfile.BadRarFile:
+        logger.error(f"Bad RAR file: {rar_path}")
         return False
-    except FileNotFoundError:
-        logger.error("Neither 'unrar' nor '7z' command found. Please install unrar or p7zip-full")
+    except PermissionError:
+        logger.error(f"Permission denied: {rar_path}")
         return False
     except Exception as e:
-        logger.error(f"Error extracting RAR {rar_path}: {str(e)}")
+        logger.error(f"Error extracting {rar_path}: {str(e)}")
         return False
 
-def get_archive_name_without_extension(file_path: str) -> str:
-    """Get the archive filename without extension."""
-    filename = os.path.basename(file_path)
-    # Remove extension (.zip, .rar, etc.)
-    name_without_ext = os.path.splitext(filename)[0]
-    return name_without_ext
-
-def extract_archives():
-    """Main function to extract all archives."""
-    logger.info("Starting archive extraction process")
+def extract_all_rars():
+    """Main function to extract all RAR files."""
+    logger.info("Starting RAR extraction process")
+    logger.info(f"Working directory: {EXTRACT_DIR}")
     
-    # Ensure extraction directory exists
-    ensure_directory_exists(EXTRACT_DIR)
+    # Find all RAR files
+    rar_files = find_rar_files(EXTRACT_DIR)
     
-    # Find all archive files
-    archive_files = find_archive_files(SOURCE_DIR)
-    
-    if not archive_files:
-        logger.warning("No archive files found to extract")
+    if not rar_files:
+        logger.warning("No RAR files found to extract")
         return
     
     successful_extractions = 0
     failed_extractions = 0
+    skipped_extractions = 0
     
-    for archive_path, archive_type in archive_files:
-        logger.info(f"Processing {archive_type.upper()} file: {archive_path}")
+    for rar_path in rar_files:
+        logger.info(f"\nProcessing: {rar_path}")
         
-        # Create subdirectory for this archive
-        archive_name = get_archive_name_without_extension(archive_path)
-        archive_extract_dir = os.path.join(EXTRACT_DIR, archive_name)
-        ensure_directory_exists(archive_extract_dir)
+        # Get extraction path
+        extraction_path = get_extraction_path(rar_path)
         
-        # Extract based on file type
-        success = False
-        if archive_type == 'zip':
-            success = extract_zip_file(archive_path, archive_extract_dir)
-        elif archive_type == 'rar':
-            success = extract_rar_file(archive_path, archive_extract_dir)
+        # Check if already extracted
+        if os.path.exists(extraction_path) and os.listdir(extraction_path):
+            logger.info(f"  → Already extracted, skipping: {extraction_path}")
+            skipped_extractions += 1
+            continue
+        
+        # Extract the RAR file
+        success = extract_rar_file(rar_path, extraction_path)
         
         if success:
             successful_extractions += 1
-            logger.info(f"✓ Extracted to: {archive_extract_dir}")
         else:
             failed_extractions += 1
-            logger.error(f"✗ Failed to extract: {archive_path}")
     
     # Summary
-    logger.info(f"\n=== EXTRACTION SUMMARY ===")
-    logger.info(f"Total archives found: {len(archive_files)}")
+    logger.info(f"\n{'='*60}")
+    logger.info("EXTRACTION SUMMARY")
+    logger.info(f"{'='*60}")
+    logger.info(f"Total RAR files found: {len(rar_files)}")
     logger.info(f"Successful extractions: {successful_extractions}")
     logger.info(f"Failed extractions: {failed_extractions}")
-    logger.info(f"Extraction directory: {EXTRACT_DIR}")
-
-def check_dependencies():
-    """Check if required tools are available."""
-    logger.info("Checking dependencies...")
-    
-    # Check for unrar
-    try:
-        subprocess.run(['unrar'], capture_output=True)
-        logger.info("✓ unrar is available")
-    except FileNotFoundError:
-        logger.warning("✗ unrar not found")
-        
-        # Check for 7z as alternative
-        try:
-            subprocess.run(['7z'], capture_output=True)
-            logger.info("✓ 7z is available as alternative for RAR files")
-        except FileNotFoundError:
-            logger.error("✗ Neither unrar nor 7z found. Install with:")
-            logger.error("  sudo apt-get install unrar  # for unrar")
-            logger.error("  sudo apt-get install p7zip-full  # for 7z")
+    logger.info(f"Skipped (already extracted): {skipped_extractions}")
+    logger.info(f"Base directory: {EXTRACT_DIR}")
+    logger.info(f"{'='*60}")
 
 if __name__ == "__main__":
-    print("Archive Extraction Script")
-    print("=" * 50)
-    print(f"Source directory: {SOURCE_DIR}")
-    print(f"Extract directory: {EXTRACT_DIR}")
-    print("=" * 50)
-    
-    # Check dependencies
-    check_dependencies()
+    print("RAR File Extraction Script")
+    print("=" * 60)
+    print(f"Target directory: {EXTRACT_DIR}")
+    print("This will extract all RAR files found in the directory tree.")
+    print("Each RAR will be extracted to a subdirectory at its location.")
+    print("=" * 60)
     
     # Ask for confirmation
     response = input("\nProceed with extraction? (y/N): ").strip().lower()
     if response in ['y', 'yes']:
-        extract_archives()
+        extract_all_rars()
         print("\nExtraction process completed. Check 'extraction.log' for details.")
     else:
-        print("Extraction cancelled.") 
+        print("Extraction cancelled.")
