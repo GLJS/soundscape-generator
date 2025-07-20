@@ -3,14 +3,16 @@
 Minimal AudioFlamingo3 example for audio captioning.
 Loads the model and generates a caption for a single audio file.
 """
+from dotenv import load_dotenv
 
+load_dotenv()
 import os
 import sys
 import torch
 from huggingface_hub import snapshot_download
 
-# Add the audio-flamingo-3 directory to Python path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'audio-flamingo-3'))
+# Add the audio-flamingo directory to Python path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'audio-flamingo'))
 
 import llava
 
