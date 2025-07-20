@@ -212,7 +212,7 @@ def main():
     parser.add_argument("--output-dir", type=str,
                        default="/scratch-shared/gwijngaard/tar/tut2016",
                        help="Output directory for tar files")
-    parser.add_argument("--samples-per-tar", type=int, default=256,
+    parser.add_argument("--samples-per-tar", type=int, default=2048,
                        help="Number of samples per tar file")
     
     args = parser.parse_args()

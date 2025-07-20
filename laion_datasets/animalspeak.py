@@ -68,7 +68,7 @@ class AnimalSpeakProcessor(DatasetProcessor):
                 metadata = {
                     'split': row['split'],  # Now guaranteed to exist
                     'original_filename': row['file_name'],
-                    'task': 'STT'
+                    'task': 'AAC'
                 }
                 matched.append((audio_path, caption, metadata))
             else:

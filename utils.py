@@ -83,7 +83,7 @@ class AudioProcessor:
 class TarCreator:
     """Creates WebDataset-compatible tar files."""
     
-    def __init__(self, output_dir: str, prefix: str = "data", samples_per_tar: int = 256, split: Optional[str] = None):
+    def __init__(self, output_dir: str, prefix: str = "data", samples_per_tar: int = 2048, split: Optional[str] = None):
         self.output_dir = Path(output_dir)
         self.prefix = prefix
         self.samples_per_tar = samples_per_tar
@@ -222,7 +222,7 @@ class DatasetProcessor:
         """Match audio files to their text captions."""
         raise NotImplementedError("Subclasses must implement match_audio_to_text")
         
-    def process_dataset(self, samples_per_tar: int = 256):
+    def process_dataset(self, samples_per_tar: int = 2048):
         """Process the entire dataset into tar files."""
         # Load metadata
         metadata_df = self.load_metadata()

@@ -24,7 +24,7 @@ load_dotenv()
 class SoundJayProcessor(DatasetProcessor):
     """Processor for SoundJay dataset."""
     
-    def __init__(self, audio_dir: str, metadata_path: str, output_dir: str):
+    def __init__(self, audio_dir: str, metadata_path: str, output_dir: str, task: str = None):
         super().__init__(audio_dir, metadata_path, output_dir)
         self.audio_archive = self.audio_dir / "audio.tar.gz"
         self.extracted_audio = {}

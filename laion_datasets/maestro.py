@@ -33,6 +33,10 @@ class MAESTROProcessor(DatasetProcessor):
         self.segment_duration = 30  # 30 seconds per segment
         self.scenes = ['cafe_restaurant', 'city_center', 'grocery_store', 
                       'metro_station', 'residential_area']
+    
+    def load_metadata(self) -> pd.DataFrame:
+        """Return empty DataFrame as MAESTRO uses per-file annotations."""
+        return pd.DataFrame()
         
     def load_annotations(self, scene: str, audio_file: str) -> List[Dict]:
         """Load soft label annotations for a specific audio file."""
@@ -56,39 +60,32 @@ class MAESTROProcessor(DatasetProcessor):
         
         return annotations
         
-    def create_caption_from_events(self, events: List[Dict], start_time: float, end_time: float) -> str:
+    def create_caption_from_events(self, events: List[Dict], start_time: float, end_time: float, scene: str) -> str:
         """Create a natural language caption from sound events in a time segment."""
-        # Filter events that overlap with the segment
-        segment_events = defaultdict(float)
+        # Filter events that overlap with the segment and have confidence >= 0.5
+        segment_events = set()
         
         for event in events:
-            # Check if event overlaps with segment
-            if event['start_time'] < end_time and event['end_time'] > start_time:
-                # Calculate overlap duration
-                overlap_start = max(event['start_time'], start_time)
-                overlap_end = min(event['end_time'], end_time)
-                overlap_duration = overlap_end - overlap_start
-                
-                # Weight by confidence and overlap duration
-                weight = event['confidence'] * (overlap_duration / (end_time - start_time))
-                segment_events[event['event']] += weight
-        
-        # Sort events by weight and create caption
-        if segment_events:
-            sorted_events = sorted(segment_events.items(), key=lambda x: x[1], reverse=True)
-            # Take top events with significant presence (weight > 0.1)
-            significant_events = [event for event, weight in sorted_events if weight > 0.1]
+            # Check if event overlaps with segment and meets confidence threshold
+            if (event['start_time'] < end_time and event['end_time'] > start_time 
+                and event['confidence'] >= 0.5):
+                segment_events.add(event['event'])
             
-            if significant_events:
-                if len(significant_events) == 1:
-                    return f"Sound of {significant_events[0]}"
-                elif len(significant_events) == 2:
-                    return f"Sounds of {significant_events[0]} and {significant_events[1]}"
-                else:
-                    events_str = ", ".join(significant_events[:-1]) + f" and {significant_events[-1]}"
-                    return f"Sounds of {events_str}"
+        scene = scene.replace('_', ' ')
         
-        return "Ambient sounds"
+        # Create caption from unique events
+        if segment_events:
+            events_list = sorted(list(segment_events))
+            if len(events_list) == 1:
+                return f"There is {events_list[0]} in a {scene}"
+            elif len(events_list) == 2:
+                return f"There is {events_list[0]} and {events_list[1]} in a {scene}"
+            else:
+                # Join all but last with commas, then add 'and' before the last
+                events_str = ", ".join(events_list[:-1]) + f" and {events_list[-1]}"
+                return f"There is {events_str} in a {scene}"
+        
+        return None
         
     def segment_audio(self, audio_path: Path, annotations: List[Dict]) -> List[Tuple[bytes, str, Dict]]:
         """Segment audio file into 30-second chunks with captions."""
@@ -123,11 +120,12 @@ class MAESTROProcessor(DatasetProcessor):
                     segment_audio = librosa.resample(segment_audio, orig_sr=sr, target_sr=48000)
                 
                 # Create caption from events
-                caption = self.create_caption_from_events(annotations, start_time, end_time)
+                caption = self.create_caption_from_events(annotations, start_time, end_time, scene)
+                if caption is None:
+                    continue
                 
-                # Add scene context to caption
-                scene_name = scene.replace('_', ' ')
-                full_caption = f"{scene_name} with {caption.lower()}"
+                # Use caption as-is (already includes "in the background")
+                full_caption = caption
                 
                 # Convert to FLAC bytes
                 output_buffer = io.BytesIO()
@@ -168,9 +166,9 @@ class MAESTROProcessor(DatasetProcessor):
             
         return segments
         
-    def match_audio_to_text(self, metadata_df=None) -> List[Tuple[bytes, str, Dict]]:
-        """Process all audio files and create segments with captions."""
-        all_segments = []
+    def process_dataset(self, samples_per_tar: int = 256):
+        """Override process_dataset to handle MAESTRO's unique structure."""
+        all_samples = []
         
         # Process each scene
         for scene in self.scenes:
@@ -189,13 +187,47 @@ class MAESTROProcessor(DatasetProcessor):
                 if annotations:
                     # Segment audio and create captions
                     segments = self.segment_audio(audio_file, annotations)
-                    all_segments.extend(segments)
+                    
+                    # Convert segments to the format expected by TarCreator
+                    for audio_bytes, caption, metadata in segments:
+                        all_samples.append({
+                            'audio_bytes': audio_bytes,
+                            'text': caption,
+                            'metadata': metadata
+                        })
+                    
                     print(f"  Processed {audio_file.name}: {len(segments)} segments")
                 else:
                     print(f"  No annotations found for {audio_file.name}")
-                    
-        print(f"\nTotal segments created: {len(all_segments)}")
-        return all_segments
+        
+        print(f"\nTotal segments created: {len(all_samples)}")
+        
+        # Create tar files
+        tar_creator = TarCreator(self.output_dir, prefix='maestro', 
+                                samples_per_tar=samples_per_tar, split='train')
+        
+        # Process in batches
+        all_summaries = []
+        for i in range(0, len(all_samples), samples_per_tar):
+            batch = all_samples[i:i+samples_per_tar]
+            if batch:
+                summary = tar_creator.create_tar_from_samples(batch, i // samples_per_tar)
+                all_summaries.append(summary)
+        
+        # Create size file
+        tar_creator.create_size_file(all_summaries)
+        
+        # Print summary
+        print(f"\nDataset processing complete!")
+        print(f"Created {len(all_summaries)} tar files")
+        total_successful = sum(s['successful'] for s in all_summaries)
+        total_failed = sum(s['failed'] for s in all_summaries)
+        print(f"Total successful: {total_successful}")
+        print(f"Total failed: {total_failed}")
+    
+    def match_audio_to_text(self, metadata_df=None) -> List[Tuple[bytes, str, Dict]]:
+        """Not used in MAESTRO - see process_dataset instead."""
+        raise NotImplementedError("MAESTRO uses custom process_dataset implementation")
         
 
 

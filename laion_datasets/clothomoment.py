@@ -80,15 +80,11 @@ class ClothoMomentProcessor:
                         # Process audio to correct format
                         processed_audio, audio_metadata = self.audio_processor.process_audio_file(io.BytesIO(audio_data))
                         
-                        # Merge metadata
-                        if 'metadata' in json_data:
-                            json_data['metadata'].update(audio_metadata)
-                        else:
-                            json_data['metadata'] = audio_metadata
+                        json_data['metadata'] = {**json_data, **audio_metadata}
                         
                         yield {
                             'audio_bytes': processed_audio,
-                            'text': json_data.get('text', ''),
+                            'text': json_data.get('caption', ''),
                             'metadata': json_data.get('metadata', {})
                         }
                         
@@ -169,8 +165,16 @@ class ClothoMomentProcessor:
                     tar.addfile(audio_info, io.BytesIO(sample['audio_bytes']))
                     
                     # Create JSON with text and metadata
+                    if 'text' in sample:
+                        text = sample['text']
+                    elif 'caption' in sample['metadata']:
+                        text = sample['metadata']['caption']
+                    elif 'raw_events' in sample['metadata']:
+                        text = sample['metadata']['raw_events']
+                    else:
+                        text = ''
                     json_data = {
-                        "text": sample['text'],
+                        "text": text,
                     }
                     
                     if 'metadata' in sample:

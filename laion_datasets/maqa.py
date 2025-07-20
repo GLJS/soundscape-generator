@@ -31,8 +31,6 @@ class MAQAProcessor(DatasetProcessor):
         
         # Load all CSV files in the directory
         for csv_file in self.metadata_path.glob("*.csv"):
-            df = pd.read_csv(csv_file)
-            
             # Extract split and language from filename
             filename = csv_file.stem
             parts = filename.split('_')
@@ -43,7 +41,12 @@ class MAQAProcessor(DatasetProcessor):
             else:
                 split = 'train'
                 language = 'unknown'
+            
+            # Only process English files
+            if language not in ['eng', 'english']:
+                continue
                 
+            df = pd.read_csv(csv_file)
             df['split'] = split
             df['language'] = language
             df['source_file'] = filename
@@ -56,7 +59,7 @@ class MAQAProcessor(DatasetProcessor):
             
             # Create caption from question and answer  
             combined_df['caption'] = combined_df.apply(
-                lambda x: f"{x.get('QuestionText', '')} Answer: {x.get('answer', '')}", 
+                lambda x: f"{x.get('QuestionText', '')} Answer: {x.get('answer', '').lower()}", 
                 axis=1
             )
             
@@ -68,7 +71,7 @@ class MAQAProcessor(DatasetProcessor):
     def match_audio_to_text(self, metadata_df: pd.DataFrame) -> List[Tuple[Path, str, Dict]]:
         """Match audio files to their captions."""
         matched = []
-        missing_count = 0
+        missing_count = 0 
         
         # Index available audio files
         print("Indexing audio files...")
@@ -89,7 +92,7 @@ class MAQAProcessor(DatasetProcessor):
                 audio_path = audio_files[filename]
                 caption = row['caption']
                 # Determine task type based on source file
-                task = 'MC' if 'multiple_choice' in str(row.get('source_file', '')).lower() else 'AQA'
+                task = 'AQA'
                 metadata = {
                     'split': row['split'],
                     'original_filename': filename,

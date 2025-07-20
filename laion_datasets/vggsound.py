@@ -18,6 +18,7 @@ import argparse
 import tarfile
 import concurrent.futures
 from dotenv import load_dotenv
+import random
 
 load_dotenv()
 
@@ -25,7 +26,7 @@ load_dotenv()
 class VGGSoundProcessor(DatasetProcessor):
     """Processor for VGGSound dataset - handles multiple tar.gz archives."""
     
-    def __init__(self, audio_dir: str, metadata_path: str, output_dir: str):
+    def __init__(self, audio_dir: str, metadata_path: str, output_dir: str, task: str = None):
         super().__init__(audio_dir, metadata_path, output_dir)
         # VGGSound has 20 tar.gz files
         self.audio_archives = sorted(self.audio_dir.glob("vggsound_*.tar.gz"))
@@ -40,29 +41,13 @@ class VGGSoundProcessor(DatasetProcessor):
         
         # Create expected filename format
         df['file_name'] = df.apply(
-            lambda x: f"{x['youtube_id']}_{str(x['start_sec']).zfill(6)}.mp4",
+            lambda x: f"{x['youtube_id']}_{str(x['start_sec']).zfill(6)}.wav",
             axis=1
         )
         
         print(f"Loaded {len(df)} entries")
         return df
         
-    def index_audio_archives(self):
-        """Create an index of all audio files across all archives."""
-        print(f"Indexing {len(self.audio_archives)} audio archives...")
-        
-        for idx, archive_path in enumerate(self.audio_archives):
-            print(f"  Indexing {archive_path.name}...")
-            try:
-                with tarfile.open(archive_path, "r:gz") as tar:
-                    for member in tar.getmembers():
-                        if member.isfile() and member.name.endswith(('.mp4', '.wav', '.mp3')):
-                            filename = os.path.basename(member.name)
-                            self.audio_index[filename] = (idx, member.name)
-            except Exception as e:
-                print(f"    Error indexing {archive_path.name}: {e}")
-                
-        print(f"Indexed {len(self.audio_index)} audio files total")
         
     def extract_audio_from_archive(self, archive_idx: int, member_name: str) -> bytes:
         """Extract a specific audio file from a specific archive."""
@@ -77,56 +62,54 @@ class VGGSoundProcessor(DatasetProcessor):
         
     def match_audio_to_text(self, metadata_df: pd.DataFrame) -> List[Tuple[bytes, str, Dict]]:
         """Match audio files to their captions."""
-        # First index all archives if not done
-        if not self.audio_index:
-            self.index_audio_archives()
-            
         matched = []
         missing_count = 0
         
         for _, row in metadata_df.iterrows():
             filename = row['file_name']
             
-            # Also check without .mp4 extension and with .wav
-            filenames_to_check = [
-                filename,
-                filename.replace('.mp4', '.wav'),
-                filename.replace('.mp4', ''),
-                os.path.basename(filename)
-            ]
+            audio_file_path = self.audio_dir / filename
             
-            audio_found = False
-            for check_filename in filenames_to_check:
-                if check_filename in self.audio_index:
-                    archive_idx, member_name = self.audio_index[check_filename]
-                    
-                    # We'll store the info needed to extract later
-                    caption = row['caption']
-                    metadata = {
-                        'split': row['split'],
-                        'original_filename': filename,
-                        'youtube_id': row['youtube_id'],
-                        'start_sec': row['start_sec'],
-                        'archive_idx': archive_idx,
-                        'member_name': member_name,
-                        'task': 'AAC'
-                    }
-                    matched.append((None, caption, metadata))  # None for audio, will extract later
-                    audio_found = True
-                    break
-                    
-            if not audio_found:
+            if audio_file_path.exists():
+                event = row['caption']
+                
+                # Create varied captions
+                caption_templates = [
+                    f"This audio contains {event}.",
+                    f"The sound of {event}.",
+                    f"A recording of {event}.",
+                    f"This is the sound of {event}.",
+                    f"Audio recording of {event}.",
+                    f"You can hear {event} in this recording.",
+                    f"This recording features {event}.",
+                    f"The audio captures {event}.",
+                    f"Sound of {event}.",
+                    f"{event.capitalize()} sound.",
+                ]
+                
+                caption = random.choice(caption_templates)
+
+                
+                metadata = {
+                    'split': row['split'],
+                    'original_filename': filename,
+                    'youtube_id': row['youtube_id'],
+                    'start_sec': row['start_sec'],
+                    'task': 'AAC'
+                }
+                matched.append((audio_file_path, caption, metadata))  # None for audio, will extract later
+            else:
                 missing_count += 1
-                if missing_count <= 10:  # Only print first 10
+                if missing_count <= 10:  # Only print first 10 missing files
                     print(f"Missing audio file: {filename}")
-                    
+                
         print(f"Matched {len(matched)} audio-text pairs")
         print(f"Missing audio files: {missing_count}")
         
         return matched
         
     # NOTE: This file needs a custom process_dataset due to audio extraction from archives
-    def process_dataset(self, samples_per_tar: int = 256):
+    def process_dataset(self, samples_per_tar: int = 2048):
         """Process the entire dataset into tar files."""
         # Load metadata
         metadata_df = self.load_metadata()
@@ -144,16 +127,12 @@ class VGGSoundProcessor(DatasetProcessor):
             batch = matched_samples[i:i+samples_per_tar]
             samples = []
             
-            for _, text, metadata in batch:
+            for audio_file_path, text, metadata in batch:
                 try:
                     # Extract audio on demand
-                    archive_idx = metadata.pop('archive_idx')
-                    member_name = metadata.pop('member_name')
-                    
-                    audio_bytes = self.extract_audio_from_archive(archive_idx, member_name)
-                    if audio_bytes:
+                    if audio_file_path.exists():
                         # Process audio
-                        processed_audio, audio_metadata = self.audio_processor.process_audio_file(audio_bytes)
+                        processed_audio, audio_metadata = self.audio_processor.process_audio_file(audio_file_path)
                         samples.append({
                             'audio_bytes': processed_audio,
                             'text': text,
@@ -185,7 +164,7 @@ class VGGSoundProcessor(DatasetProcessor):
 def main():
     parser = argparse.ArgumentParser(description="Convert VGGSound dataset to tar format")
     parser.add_argument("--audio-dir", type=str, 
-                       default="/scratch-shared/gwijngaard/laion/VGGSound",
+                       default="/scratch-shared/gwijngaard/laion/VGGSound/wav",
                        help="Path to directory containing vggsound_*.tar.gz files")
     parser.add_argument("--metadata", type=str,
                        default="/gpfs/work4/0/einf6190/data-preparation/data/VGGSound/vggsound.csv",
