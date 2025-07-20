@@ -17,6 +17,11 @@ from tqdm import tqdm
 import json
 from huggingface_hub import snapshot_download
 from functools import partial
+import httpx
+import asyncio
+import time
+from concurrent.futures import ThreadPoolExecutor
+import logging
 
 # Add flamingo directory to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'flamingo'))
@@ -25,6 +30,10 @@ from llava.utils.media import extract_media
 from llava.utils.tokenizer import tokenize_conversation
 from llava.mm_utils import process_sounds, process_sound_masks
 import numpy as np
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 class AudioRecaptionDataset(Dataset):
@@ -50,23 +59,29 @@ class AudioRecaptionDataset(Dataset):
     def __getitem__(self, idx):
         # Load audio as Sound object
         audio_path = self.audio_paths[idx]
-        sound = llava.Sound(str(audio_path))
-        
-        # Generate prompt using recaptioner if available
-        if self.recaptioner:
-            prompt = self.recaptioner.generate_prompt(self.metadata[idx])
-        else:
-            prompt = "Please describe this audio in detail. Include information about the sounds, their characteristics, duration, and any notable features."
-        
-        # Create conversation format expected by the model
-        conversation = [{"from": "human", "value": [sound, prompt]}]
         
         return {
-            'conversation': conversation,
             'metadata': self.metadata[idx],
             'audio_path': audio_path,
             'index': idx
         }
+
+
+def collate_audio_batch_simple(batch: List[Dict]) -> Dict[str, Any]:
+    """
+    Simple collator for HTTP mode that just passes through data.
+    
+    Args:
+        batch: List of items from dataset
+        
+    Returns:
+        Dict with batch data
+    """
+    return {
+        'metadata': [item['metadata'] for item in batch],
+        'audio_paths': [item['audio_path'] for item in batch],
+        'indices': [item['index'] for item in batch]
+    }
 
 
 def collate_audio_batch(batch: List[Dict], tokenizer, model_config) -> Dict[str, Any]:
@@ -81,76 +96,7 @@ def collate_audio_batch(batch: List[Dict], tokenizer, model_config) -> Dict[str,
     Returns:
         Dict with preprocessed batch data ready for generation
     """
-    conversations = [item['conversation'] for item in batch]
-    
-    # Extract and process media for all items in batch
-    all_media = {'sound': []}
-    all_media_meta = {
-        'sound_feature_masks': [], 
-        'sound_embed_masks': []
-    }
-    
-    # Process each conversation to extract media
-    for conv in conversations:
-        media, media_meta = extract_media(conv, model_config)
-        
-        # Process sounds
-        if 'sound' in media:
-            # Convert lists back to tensors and collect
-            for sound_list in media["sound"]:
-                # sound_list is a list representation of a tensor
-                sound_tensor = torch.tensor(sound_list, dtype=torch.float32)
-                all_media['sound'].append(sound_tensor)
-            
-            # Collect masks (they're already tensors)
-            all_media_meta['sound_feature_masks'].extend(media_meta["sound_feature_masks"])
-            all_media_meta['sound_embed_masks'].extend(media_meta["sound_embed_masks"])
-    
-    # Tokenize all conversations
-    input_ids_list = []
-    attention_mask_list = []
-    
-    for conv in conversations:
-        # Replace media objects with tokens for tokenization
-        conv_for_tokenize = []
-        for msg in conv:
-            new_msg = {"from": msg["from"], "value": msg["value"]}
-            if isinstance(msg["value"], list):
-                # Replace Sound objects with <sound> token
-                text_parts = []
-                for part in msg["value"]:
-                    if isinstance(part, llava.Sound):
-                        text_parts.append("<sound>")
-                    else:
-                        text_parts.append(part)
-                new_msg["value"] = "\n".join(text_parts)
-            conv_for_tokenize.append(new_msg)
-        
-        # Tokenize
-        input_ids = tokenize_conversation(
-            conv_for_tokenize, 
-            tokenizer, 
-            add_generation_prompt=True
-        )
-        input_ids_list.append(input_ids.squeeze(0))  # Remove batch dimension
-    
-    # Pad sequences to same length
-    input_ids = torch.nn.utils.rnn.pad_sequence(
-        input_ids_list, 
-        batch_first=True, 
-        padding_value=tokenizer.pad_token_id
-    )
-    
-    # Create attention mask
-    attention_mask = input_ids != tokenizer.pad_token_id
-    
-    # Media tensors are already processed above, no need to process again
-    
     return {
-        'input_ids': input_ids,
-        'attention_mask': attention_mask,
-        'media': all_media,
-        'media_meta': all_media_meta,
         'metadata': [item['metadata'] for item in batch],
         'audio_paths': [item['audio_path'] for item in batch],
         'indices': [item['index'] for item in batch]
@@ -161,7 +107,8 @@ class LLMRecaptioner:
     """Handles LLM-based audio recaptioning with batching support."""
     
     def __init__(self, model_name: str = "nvidia/audio-flamingo-3", 
-                 device: str = None, labels_df: Optional[pd.DataFrame] = None):
+                 device: str = None, labels_df: Optional[pd.DataFrame] = None,
+                 server_url: Optional[str] = None):
         """
         Initialize the recaptioner with specified model.
         
@@ -169,6 +116,7 @@ class LLMRecaptioner:
             model_name: HuggingFace model identifier
             device: Device to run on (auto-detected if None)
             labels_df: DataFrame with labels for context-aware prompting
+            server_url: Optional HTTP server URL for remote inference
         """
         self.model_name = model_name
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -176,9 +124,41 @@ class LLMRecaptioner:
         self.model = None
         self.generation_config = None
         
+        # HTTP client configuration
+        self.server_url = server_url or os.getenv("AUDIO_FLAMINGO_SERVER_URL", "http://localhost:8080")
+        self.use_http = bool(server_url) or os.getenv("USE_HTTP_SERVER", "false").lower() == "true"
+        
+        # Connection pooling for better performance
+        if self.use_http:
+            self.client = httpx.Client(
+                timeout=httpx.Timeout(300.0),  # 5 minute timeout
+                limits=httpx.Limits(max_keepalive_connections=10, max_connections=20)
+            )
+            logger.info(f"Using HTTP server at {self.server_url}")
+    
+    def __del__(self):
+        """Cleanup HTTP client on deletion"""
+        if hasattr(self, 'client') and self.client:
+            self.client.close()
+        
     def load_model(self):
         """Load the model (call this once per worker process)."""
-        if self.model is None:
+        if self.use_http:
+            # For HTTP mode, just check server health
+            try:
+                response = self.client.get(f"{self.server_url}/health")
+                if response.status_code == 200:
+                    health = response.json()
+                    if health["model_loaded"]:
+                        logger.info(f"HTTP server ready: {health}")
+                    else:
+                        raise RuntimeError("HTTP server model not loaded")
+                else:
+                    raise RuntimeError(f"HTTP server health check failed: {response.status_code}")
+            except Exception as e:
+                logger.error(f"Failed to connect to HTTP server: {e}")
+                raise
+        elif self.model is None:
             print(f"Loading {self.model_name} on {self.device}...")
             model_base = snapshot_download(repo_id=self.model_name)
             self.model = llava.load(model_base, model_base=None)
@@ -232,6 +212,54 @@ class LLMRecaptioner:
             
         return None
     
+    def _http_generate(self, audio_path: str, prompt: str, max_retries: int = 3) -> str:
+        """
+        Generate caption using HTTP server with retry logic.
+        
+        Args:
+            audio_path: Path to audio file
+            prompt: Generation prompt
+            max_retries: Number of retries on failure
+            
+        Returns:
+            Generated caption
+        """
+        for attempt in range(max_retries):
+            try:
+                response = self.client.post(
+                    f"{self.server_url}/generate",
+                    json={
+                        "audio_path": str(audio_path),
+                        "prompt": prompt,
+                        "max_new_tokens": getattr(self.generation_config, 'max_new_tokens', 1024) if self.generation_config else 1024
+                    }
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    return result["caption"]
+                elif response.status_code == 504:  # Timeout
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** attempt  # Exponential backoff
+                        logger.warning(f"Request timeout, retrying in {wait_time}s...")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        raise RuntimeError("Request timeout after retries")
+                else:
+                    raise RuntimeError(f"HTTP error {response.status_code}: {response.text}")
+                    
+            except httpx.ConnectError as e:
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt
+                    logger.warning(f"Connection error, retrying in {wait_time}s: {e}")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    raise
+        
+        raise RuntimeError(f"Failed after {max_retries} attempts")
+    
     def process_batch(self, batch: Dict[str, Any]) -> List[str]:
         """
         Process a batch of audio files and generate captions.
@@ -248,18 +276,20 @@ class LLMRecaptioner:
         
         captions = []
         
-        # Process each audio file individually using generate_content
+        # Process each audio file individually
         for i, (audio_path, metadata) in enumerate(zip(batch['audio_paths'], batch['metadata'])):
             try:
-                # Create Sound object
-                sound = llava.Sound(str(audio_path))
-                
                 # Generate prompt
                 prompt = self.generate_prompt(metadata)
-                full_prompt = f"<sound>\n{prompt}"
                 
-                # Generate caption using generate_content
-                response = self.model.generate_content([sound, full_prompt], generation_config=self.generation_config)
+                if self.use_http:
+                    # Use HTTP server
+                    response = self._http_generate(audio_path, prompt)
+                else:
+                    # Use local model with generate_content
+                    sound = llava.Sound(str(audio_path))
+                    full_prompt = f"<sound>\n{prompt}"
+                    response = self.model.generate_content([sound, full_prompt], generation_config=self.generation_config)
                 
                 captions.append(response)
                 
@@ -278,7 +308,8 @@ def process_dataset_with_llm(
     batch_size: int = 64,
     num_workers: int = 8,
     labels_csv: Optional[str] = None,
-    model_name: str = "nvidia/audio-flamingo-3"
+    model_name: str = "nvidia/audio-flamingo-3",
+    server_url: Optional[str] = None
 ) -> List[Tuple[Path, str, Dict]]:
     """
     Process entire dataset with LLM recaptioning using batch processing.
@@ -290,6 +321,7 @@ def process_dataset_with_llm(
         num_workers: Number of DataLoader workers
         labels_csv: Optional path to CSV with labels
         model_name: Model to use for captioning
+        server_url: Optional HTTP server URL for remote inference
         
     Returns:
         List of tuples (audio_path, caption, metadata)
@@ -301,18 +333,22 @@ def process_dataset_with_llm(
         print(f"Loaded {len(labels_df)} label entries from {labels_csv}")
     
     # Initialize recaptioner and load model once
-    recaptioner = LLMRecaptioner(model_name=model_name, labels_df=labels_df)
+    recaptioner = LLMRecaptioner(model_name=model_name, labels_df=labels_df, server_url=server_url)
     recaptioner.load_model()
     
     # Create dataset with recaptioner for prompt generation
     dataset = AudioRecaptionDataset(audio_paths, metadata, labels_df, recaptioner)
     
     # Create custom collate function with model info
-    collate_fn = partial(
-        collate_audio_batch, 
-        tokenizer=recaptioner.tokenizer,
-        model_config=recaptioner.config
-    )
+    if recaptioner.use_http:
+        # For HTTP mode, use simple collate that just passes through data
+        collate_fn = collate_audio_batch_simple
+    else:
+        collate_fn = partial(
+            collate_audio_batch, 
+            tokenizer=recaptioner.tokenizer,
+            model_config=recaptioner.config
+        )
     
     # Create dataloader with multi-worker support for preprocessing
     dataloader = DataLoader(
