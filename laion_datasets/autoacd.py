@@ -2,8 +2,7 @@
 """
 Convert Auto-ACD dataset to WebDataset tar format.
 
-Audio location: /scratch-shared/gwijngaard/laion/Auto-ACD/flac/ (extracted)
-                /scratch-shared/gwijngaard/laion/Auto-ACD/flac.tar.bz2 (archive)
+Audio location: /scratch-shared/gwijngaard/laion/Auto-ACD/flac/ (extracted FLAC files)
 Metadata: /gpfs/work4/0/einf6190/data-preparation/data/AutoACD/train.csv and test.csv
 """
 
@@ -16,7 +15,6 @@ from pathlib import Path
 from utils import DatasetProcessor, AudioProcessor, TarCreator
 from typing import List, Tuple, Dict
 import argparse
-import tarfile
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -28,7 +26,6 @@ class AutoACDProcessor(DatasetProcessor):
     def __init__(self, audio_dir: str, metadata_path: str, output_dir: str):
         super().__init__(audio_dir, metadata_path, output_dir)
         self.flac_dir = self.audio_dir / "flac"
-        self.flac_archive = self.audio_dir / "flac.tar.bz2"
         
     def load_metadata(self) -> pd.DataFrame:
         """Load Auto-ACD metadata CSVs."""
@@ -55,90 +52,39 @@ class AutoACDProcessor(DatasetProcessor):
         matched = []
         missing_count = 0
         
-        # Check if flac directory exists with extracted files
-        if self.flac_dir.exists():
-            print(f"Using extracted FLAC files from {self.flac_dir}")
+        # Check if flac directory exists
+        if not self.flac_dir.exists():
+            print(f"ERROR: FLAC directory not found at {self.flac_dir}")
+            return []
             
-            # Index available files
-            audio_files = {}
-            for audio_file in self.flac_dir.glob("*.flac"):
-                audio_files[audio_file.name] = audio_file
-                
-            print(f"Found {len(audio_files)} FLAC files")
+        print(f"Using FLAC files from {self.flac_dir}")
+        
+        # Index available files
+        audio_files = {}
+        for audio_file in self.flac_dir.glob("*.flac"):
+            audio_files[audio_file.name] = audio_file
             
-            # Match with metadata
-            for _, row in metadata_df.iterrows():
-                filename = row['file_name']
-                
-                if filename in audio_files:
-                    audio_path = audio_files[filename]
-                    caption = row['caption']
-                    metadata = {
-                        'split': row['split'],
-                        'original_filename': filename,
-                        'youtube_id': row['youtube_id']
-                    }
-                    matched.append((audio_path, caption, metadata))
-                else:
-                    missing_count += 1
-                    
-        else:
-            # Need to use the tar.bz2 archive
-            print(f"FLAC directory not found, will extract from {self.flac_archive}")
+        print(f"Found {len(audio_files)} FLAC files")
+        
+        # Match with metadata
+        for _, row in metadata_df.iterrows():
+            filename = row['file_name']
             
-            if self.flac_archive.exists():
-                # Extract on the fly
-                matched = self._match_from_archive(metadata_df)
+            if filename in audio_files:
+                audio_path = audio_files[filename]
+                caption = row['caption']
+                metadata = {
+                    'split': row['split'],
+                    'original_filename': filename,
+                    'youtube_id': row['youtube_id'],
+                    'task': 'AAC'
+                }
+                matched.append((audio_path, caption, metadata))
             else:
-                print("ERROR: Neither flac directory nor flac.tar.bz2 archive found!")
-                return []
+                missing_count += 1
                 
         print(f"Matched {len(matched)} audio-text pairs")
         print(f"Missing audio files: {missing_count}")
-        
-        return matched
-        
-    def _match_from_archive(self, metadata_df: pd.DataFrame) -> List[Tuple[bytes, str, Dict]]:
-        """Extract and match audio files from tar.bz2 archive."""
-        matched = []
-        
-        print("Indexing flac.tar.bz2 archive...")
-        
-        # First, index the archive
-        file_index = {}
-        with tarfile.open(self.flac_archive, "r:bz2") as tar:
-            for member in tar.getmembers():
-                if member.isfile() and member.name.endswith('.flac'):
-                    filename = os.path.basename(member.name)
-                    file_index[filename] = member.name
-                    
-        print(f"Found {len(file_index)} FLAC files in archive")
-        
-        # Now match and extract as needed
-        missing_count = 0
-        
-        with tarfile.open(self.flac_archive, "r:bz2") as tar:
-            for _, row in metadata_df.iterrows():
-                filename = row['file_name']
-                
-                if filename in file_index:
-                    member_name = file_index[filename]
-                    member = tar.getmember(member_name)
-                    f = tar.extractfile(member)
-                    
-                    if f:
-                        audio_bytes = f.read()
-                        caption = row['caption']
-                        metadata = {
-                            'split': row['split'],
-                            'original_filename': filename,
-                            'youtube_id': row['youtube_id']
-                        }
-                        matched.append((audio_bytes, caption, metadata))
-                else:
-                    missing_count += 1
-                    
-        print(f"Missing files: {missing_count}")
         
         return matched
 
@@ -147,7 +93,7 @@ def main():
     parser = argparse.ArgumentParser(description="Convert Auto-ACD dataset to tar format")
     parser.add_argument("--audio-dir", type=str, 
                        default="/scratch-shared/gwijngaard/laion/Auto-ACD",
-                       help="Path to directory containing flac/ or flac.tar.bz2")
+                       help="Path to directory containing flac/ subdirectory")
     parser.add_argument("--metadata", type=str,
                        default="/gpfs/work4/0/einf6190/data-preparation/data/AutoACD",
                        help="Path to directory containing train.csv and test.csv")
@@ -163,8 +109,7 @@ def main():
     processor = AutoACDProcessor(
         audio_dir=args.audio_dir,
         metadata_path=args.metadata,
-        output_dir=args.output_dir,
-        task="AAC")
+        output_dir=args.output_dir)
     
     # Process dataset
     processor.process_dataset(samples_per_tar=args.samples_per_tar)

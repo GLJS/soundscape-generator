@@ -1,0 +1,32 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Current File",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
+            "name": "SGLang Launch Server",
+            "type": "python",
+            "request": "launch",
+            "module": "sglang.launch_server",
+            "args": [
+                "--model-path",
+                "google/gemma-3n-e4b-it",
+                "--attention-backend",
+                "fa3",
+                "--port",
+                "30000"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false
+        }
+    ]
+}
