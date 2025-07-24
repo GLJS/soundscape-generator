@@ -18,7 +18,7 @@ module load CUDA/12.6.0
 
 # Start SGLang server
 echo "Starting SGLang server..."
-python -m sglang.launch_server --model-path google/gemma-3n-e4b-it --attention-backend fa3 --port 30000 > sglang_server.log 2>&1 &
+python -m sglang.launch_server --model-path google/gemma-3n-e4b-it --attention-backend fa3 --port 30000 > sglang_server_downloaded_sfx.log 2>&1 &
 SGLANG_PID=$!
 
 # Wait for server

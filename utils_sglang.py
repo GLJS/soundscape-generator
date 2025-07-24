@@ -171,7 +171,7 @@ class SGLangProcessor:
     def _check_server(self):
         """Check if SGLang server is available."""
         try:
-            response = requests.get(f"{self.server_url}/v1/models", timeout=5)
+            response = requests.get(f"{self.server_url}/v1/models", timeout=120)
             if response.status_code == 200:
                 models = response.json()
                 logger.info(f"SGLang server is available. Models: {models}")

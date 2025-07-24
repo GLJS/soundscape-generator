@@ -166,7 +166,7 @@ class GemmaProcessor:
     def _check_server(self):
         """Verify SGLang server is running."""
         try:
-            response = requests.get(f"{self.server_url}/v1/models", timeout=5)
+            response = requests.get(f"{self.server_url}/v1/models", timeout=120)
             if response.status_code == 200:
                 logger.info(f"SGLang server ready: {response.json()}")
             else:
